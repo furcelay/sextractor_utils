@@ -1,0 +1,69 @@
+#!/bin/env python
+
+import argparse
+import warnings
+from astropy.io import fits
+import os
+import numpy as np
+
+# REF: Casertano et al. (2000b)
+# Drizzle parameters header keys
+PIX_INPUT_SIZE = 'D001ISCL'
+PIX_OUTPUT_SIZE = 'D001SCAL'
+PIXFRAC = 'D001PIXF'
+
+
+def weights_to_rms(input_file, args):
+    output_file = os.path.basename(input_file).replace('wht', 'sci_wht')
+
+    weights = fits.getdata(input_file)
+    header = fits.getheader(input_file)
+    
+    if args.correlation == 'compute':
+
+        pixfrac = header[PIXFRAC]
+        scale = header[PIX_OUTPUT_SIZE] / header[PIX_INPUT_SIZE]
+    
+        if scale < pixfrac:
+            sqrt_factor = scale / pixfrac * (1 - 1/3 * scale / pixfrac)
+        else:
+            sqrt_factor = 1 - 1/3 * pixfrac / scale
+    
+        ratio = 1 / sqrt_factor
+    
+    else:
+        ratio = float(args.correlation)
+
+    rms = ratio / np.sqrt(weights)
+
+    header['FILETYPE'] = 'RMS'
+    
+    os.makedirs(args.output, exist_ok=True)
+    rms_fits = fits.PrimaryHDU(data=rms, header=header)
+    print(f"{args.output}/{output_file}, ratio: {ratio:.3f}")
+    rms_fits.writeto(f"{args.output}/{output_file}", overwrite=True)
+
+
+if __name__ == "__main__":
+
+    def parse_arguments():
+        parser = argparse.ArgumentParser(description='Make a weight map from drizzle weights')
+
+        parser.add_argument("-i", "--input", help="directory with drizzle weights (def: Drizzle)",
+                            type=str, default="Drizzle")
+        parser.add_argument("-o", "--output", help="output directory (def: RMS)",
+                            type=str, default="RMS")
+        parser.add_argument("-c", "--correlation", help="ratio between uncorrelated and correlated RMS",
+                            type=str, default="compute")
+
+        args = parser.parse_args()
+
+        return args
+
+    warnings.filterwarnings('ignore', category=RuntimeWarning, append=True)
+
+    args_ = parse_arguments()
+    _, _, files = next(os.walk(args_.input))
+    for file in sorted(files):
+        if 'wht' in file:
+            weights_to_rms(f"{args_.input}/{file}", args_)

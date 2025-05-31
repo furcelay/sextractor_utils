@@ -1,0 +1,126 @@
+#!/bin/env python
+
+import os
+import argparse
+from subprocess import run
+from astropy.io import fits
+
+
+def run_sextractor(input_file_1, input_file_2, args):
+    input_name_1 = os.path.basename(input_file_1).replace('.fits', '')
+    input_name_2 = os.path.basename(input_file_2).replace('.fits', '')
+    if args.subdir:
+        outdir = f"{args.output}/{input_name_2}"
+    else:
+        outdir = args.output
+    os.makedirs(outdir, exist_ok=True)
+
+    sex_config = dict()
+    sex_config['-c'] = args.config
+    sex_config["-CATALOG_NAME"] = f"{outdir}/{input_name_2}_cat.fits"
+    sex_config["-CATALOG_TYPE"] = "FITS_LDAC"
+
+    if args.flags:
+        sex_config["-FLAG_IMAGE"] = f"{args.flags}/{input_name_1}_flag.fits"
+
+    if args.weights:
+        weigths_1 = f"{args.weights[0]}/{input_name_1}_wht.fits"
+        weights_2 = f"{args.weights[1]}/{input_name_2}_wht.fits"
+        sex_config["-WEIGHT_IMAGE"] = f"{weigths_1},{weights_2}"
+
+    if args.gain:
+        sex_config["-GAIN"] = compute_gain(input_file_2, args)
+
+    if args.zero_point:
+        sex_config["-MAG_ZEROPOINT"] = args.zero_point
+
+    if args.fwhm:
+        sex_config["-SEEING_FWHM"] = args.fwhm
+
+    options = [x for item in sex_config.items() for x in item]
+    command = ["sex"] + [f"{input_file_1},{input_file_2}"] + options
+    run(command)
+
+
+def compute_gain(input_file, args):
+    header = fits.getheader(input_file)
+    if args.gain.lower() == 'counts':
+        gain = get_header_gain(header, args)
+    elif args.gain.lower() == 'cps':
+        gain = get_header_gain(header, args)
+        gain *= header['EXPTIME']
+    else:
+        try:
+            gain = float(args.gain)
+        except ValueError:
+            raise ValueError(f"{args.gain} is not a valid value for gain")
+    str_gain = f"{gain:4.4f}"
+    print(f"using GAIN={str_gain}")
+    return str_gain
+
+
+def get_header_gain(header, args):
+    if args.gain_key.lower() == 'auto':
+        if 'GAIN' in header:
+            return header['GAIN']
+        else:
+            gain_keys = header['*GAIN*']
+            if len(gain_keys) == 1:
+                return gain_keys[0]
+            else:
+                raise ValueError(f"Can't find the key for gain in header, please provide one")
+    else:
+        return header[args.gain_key]
+
+
+if __name__ == "__main__":
+
+    def parse_arguments():
+        parser = argparse.ArgumentParser(description="Wrapper for running SExtractor in dual mode")
+
+        parser.add_argument('-id', "--input-detection", help="directory with images for detections (def: Tiles)",
+                            default="Tiles", type=str)
+        parser.add_argument('-ip', "--input-photometry", help="directory with input for photometry (def: Tiles_F200LP)",
+                            default="Tiles_F200LP", type=str)
+        parser.add_argument('-sep', help="separator character between image name and filter (def: '_')",
+                            default='_', type=str)
+        parser.add_argument('-o', "--output", help="output directory for sextracted data (def: Sextracted_F200LP)",
+                            type=str, default="Sextracted_F200LP")
+        parser.add_argument('-c', "--config", help="SExtractor configuration file (def: default.sex)",
+                            type=str, default="default.sex")
+        parser.add_argument('--subdir', help="make a subdirectory for each image", action='store_true')
+        parser.add_argument('--flags', help="directory with fits images to be passed as FLAG_IMAGE, "
+                                            "must have the same name as the input image but ending in '_flag'",
+                            type=str)
+        parser.add_argument('--weights', help="directories with fits images to be passed as WEIGHT_IMAGE "
+                                              "for detection and photometry respectively, "
+                                              "must have the same name as the input image but ending in '_wht'",
+                            type=str, nargs=2)
+        parser.add_argument('--gain', help="Can be 'counts' to read from the header and it as GAIN, "
+                                           "'cps' to read from the header and use GAIN*EXPOSURE_TIME, "
+                                           "or a float  in e-/ADU to be used directly as GAIN",
+                                           type=str, default='cps')
+        parser.add_argument('--gain-key', help="Header key for gain if 'counts' or 'cps' are used "
+                                               "or 'auto' to search in the header (Def: auto)",
+                            type=str, default='auto')
+        parser.add_argument('-zp', '--zero-point', help="Zero-Point Magnitude", type=str)
+        parser.add_argument('-fwhm', help="Value of seeing FWHM", type=str)
+
+        args = parser.parse_args()
+
+        return args
+
+    args_ = parse_arguments()
+
+    files_1 = os.listdir(args_.input_detection)
+    files_2 = os.listdir(args_.input_photometry)
+    for i, image_1 in enumerate(sorted(files_1)):
+        name = image_1.split(args_.sep)[0]
+        for image_2 in files_2:
+            if name in image_2:
+                print(80 * "=")
+                print(f"({i + 1}/{len(files_1)}): {name}")
+                print('detections:', image_1)
+                print('photometry:', image_2)
+                run_sextractor(f"{args_.input_detection}/{image_1}",
+                f"{args_.input_photometry}/{image_2}", args_)
